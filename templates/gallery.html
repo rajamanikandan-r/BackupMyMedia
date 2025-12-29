@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud Image Vault</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .img-card { transition: transform .2s; }
+        .img-card:hover { transform: scale(1.05); }
+        .gallery-img { height: 200px; object-fit: cover; }
+    </style>
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-dark bg-dark mb-4">
+        <div class="container">
+            <span class="navbar-brand">📸 My Cloud Gallery</span>
+        </div>
+    </nav>
+
+    <div class="container mb-4">
+        <form action="/" method="get" class="d-flex">
+            <input name="search" class="form-control me-2" type="search" placeholder="Search by Camera Model (e.g. iPhone 15)">
+            <button class="btn btn-outline-success" type="submit">Search</button>
+        </form>
+    </div>
+
+    <div class="container mb-5">
+        <div class="card shadow-sm p-4">
+            <h5>Upload New Image</h5>
+            <form action="/upload" method="post" enctype="multipart/form-data" class="row g-3">
+                <div class="col-auto">
+                    <input type="file" name="photos" class="form-control" accept="image/*" multiple required>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary">Upload to Vault</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="row row-cols-1 row-cols-md-3 g-4">
+            {% for item in items %}
+            <div class="col">
+                <div class="card h-100 shadow-sm img-card">
+                    <img src="{{ item.thumb_url }}" class="card-img-top gallery-img" alt="...">
+                    <div class="card-body text-center">
+                        <h6 class="card-title text-truncate">{{ item.name }}</h6>
+                        <a href="{{ item.orig_url }}" target="_blank" class="btn btn-sm btn-outline-primary">View Original</a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</body>
+</html>
