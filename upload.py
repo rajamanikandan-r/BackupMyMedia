@@ -4,14 +4,14 @@ import io
 from google.cloud import storage, firestore
 from PIL import Image
 from PIL.ExifTags import TAGS
-from tqdm import tqdm  # Make sure to run 'pip install tqdm'
+from tqdm import tqdm
 
-# --- 1. CONFIGURATION ---
+# --- CONFIGURATION ---
 PROJECT_ID = "life-begins-at-40"
 BUCKET_NAME = "lb40-bucket"
 KEY_PATH = "life-begins-at-40-a0cf724dc4fe.json"
 
-# --- 2. INITIALIZATION (Must be before functions) ---
+# --- INITIALIZATION ---
 storage_client = storage.Client.from_service_account_json(KEY_PATH)
 db = firestore.Client.from_service_account_json(
     KEY_PATH, project=PROJECT_ID, database="media-metadata"
@@ -32,7 +32,6 @@ def get_exif_data(path):
         return {}
 
 def upload_image(file_path, quiet=False):
-    # This function now "sees" storage_client because it's defined at the top
     filename = os.path.basename(file_path)
     bucket = storage_client.bucket(BUCKET_NAME)
 
@@ -44,8 +43,6 @@ def upload_image(file_path, quiet=False):
     # 2. Create and Upload Thumbnail
     img = Image.open(file_path)
     img.thumbnail((200, 200))
-    
-    # Use BytesIO to avoid creating extra temp files on your disk
     thumb_io = io.BytesIO()
     img.save(thumb_io, format="JPEG")
     thumb_io.seek(0)
@@ -57,15 +54,16 @@ def upload_image(file_path, quiet=False):
     # 3. Get Metadata
     metadata = get_exif_data(file_path)
 
-    # 4. Save to Firestore
+    # 4. Save to Firestore (FLAT FORMAT)
     db.collection("images").document(filename).set({
-        "filename": filename,
+        "name": filename,
         "orig_url": orig_url,
         "thumb_url": thumb_url,
-        "metadata": metadata,
+        "camera": metadata.get('Model', 'Unknown'),
+        "make": metadata.get('Make', 'Unknown'),
+        "date_taken": metadata.get('DateTimeOriginal', 'Unknown'),
         "uploaded_at": firestore.SERVER_TIMESTAMP
     })
-    
     if not quiet:
         print(f"Uploaded: {filename}")
 
@@ -74,17 +72,18 @@ if __name__ == "__main__":
     parser.add_argument("--dir", required=True, help="Path to image or directory")
     args = parser.parse_args()
 
-    if os.path.isfile(args.dir):
-        upload_image(args.dir)
-    elif os.path.isdir(args.dir):
-        files_to_upload = [f for f in os.listdir(args.dir) 
+    target_path = os.path.abspath(args.dir)
+
+    if os.path.isfile(target_path):
+        upload_image(target_path)
+    elif os.path.isdir(target_path):
+        files_to_upload = [f for f in os.listdir(target_path) 
                            if f.lower().endswith(('jpg', 'jpeg', 'png'))]
         
         if not files_to_upload:
-            print("No images found in that directory.")
+            print("No images found.")
         else:
             print(f"🚀 Starting upload of {len(files_to_upload)} images...")
-            # Wrapping the loop in tqdm creates the progress bar
-            for f in tqdm(files_to_upload, desc="Uploading Gallery", unit="photo"):
-                upload_image(os.path.join(args.dir, f), quiet=True)
+            for f in tqdm(files_to_upload, desc="Progress", unit="photo"):
+                upload_image(os.path.join(target_path, f), quiet=True)
             print("\n✅ All uploads complete!")
