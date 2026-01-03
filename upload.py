@@ -85,5 +85,8 @@ if __name__ == "__main__":
         else:
             print(f"🚀 Starting upload of {len(files_to_upload)} images...")
             for f in tqdm(files_to_upload, desc="Progress", unit="photo"):
-                upload_image(os.path.join(target_path, f), quiet=True)
+                try:
+                    upload_image(os.path.join(target_path, f), quiet=True)
+                except Exception:
+                    print("Error uploading {f}")
             print("\n✅ All uploads complete!")
