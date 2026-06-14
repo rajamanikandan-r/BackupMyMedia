@@ -242,7 +242,14 @@ def tag(tag_name):
                 'orig_url': data.get('orig_url'),
                 'tags': data.get('tags', [])
             })
-        return render_template("gallery.html", items=items, active_tag=tag_name.lower(), all_tags=sorted(all_tags))
+        page = max(1, request.args.get('page', 1, type=int))
+        per_page = 50
+        total = len(items)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        items = items[(page - 1) * per_page : page * per_page]
+        return render_template("gallery.html", items=items, active_tag=tag_name.lower(),
+                               all_tags=sorted(all_tags), page=page, total_pages=total_pages)
     except Exception as e:
         return f"Error: {e}", 500
 

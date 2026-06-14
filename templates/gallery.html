@@ -9,11 +9,19 @@
         .img-card { transition: transform .2s; }
         .img-card:hover { transform: scale(1.05); }
         .gallery-img { height: 200px; object-fit: cover; }
+        #sidebar {
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            overflow-y: auto;
+        }
+        .tag-link { display: block; padding: 4px 8px; border-radius: 4px; text-decoration: none; color: #333; font-size: .9rem; }
+        .tag-link:hover, .tag-link.active { background: #0d6efd; color: #fff; }
     </style>
 </head>
 <body class="bg-light">
-    <nav class="navbar navbar-dark bg-dark mb-4">
-        <div class="container">
+    <nav class="navbar navbar-dark bg-dark mb-0">
+        <div class="container-fluid">
             <span class="navbar-brand">📸 My Cloud Gallery</span>
             <div class="d-flex gap-2">
                 <a href="/autotag" class="btn btn-outline-light btn-sm">Auto-tag New</a>
@@ -24,112 +32,114 @@
         </div>
     </nav>
 
-    <div class="container mb-4">
-        <form action="/" method="get" class="d-flex">
-            <input name="search" class="form-control me-2" type="search" placeholder="Search by Camera Model (e.g. iPhone 15)">
-            <button class="btn btn-outline-success" type="submit">Search</button>
-        </form>
-    </div>
+    <div class="d-flex" style="min-height:calc(100vh - 56px);">
 
-    <div class="container mb-5">
-        <div class="card shadow-sm p-4">
-            <h5>Upload New Image</h5>
-            <form action="/upload" method="post" enctype="multipart/form-data" class="row g-3">
-                <div class="col-auto">
-                    <input type="file" name="photos" class="form-control" accept="image/*" multiple required>
-                </div>
-                <div class="col-auto">
-                    <input type="text" name="tags" class="form-control" placeholder="Tags (comma-separated, e.g. vacation, family)">
-                </div>
-                <div class="col-auto">
-                    <button type="submit" class="btn btn-primary">Upload to Vault</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <div class="container">
-        {% if all_tags %}
-        <div class="card shadow-sm p-3 mb-4">
-            <h6 class="mb-2">All Tags</h6>
+        <!-- LEFT SIDEBAR: Tags -->
+        <div id="sidebar" class="bg-white border-end p-3" style="width:200px;min-width:200px;">
+            <div class="fw-semibold mb-2 text-muted small text-uppercase">Tags</div>
             {% for t in all_tags %}
-            <a href="/tag/{{ t }}" class="badge bg-primary text-decoration-none me-1 mb-1 fs-6">{{ t }}</a>
+            <a href="/tag/{{ t }}" class="tag-link {% if t == active_tag %}active{% endif %}">{{ t }}</a>
             {% endfor %}
         </div>
-        {% endif %}
 
-        {% if active_tag %}
-        <h5 class="mb-3">Photos tagged: <span class="badge bg-secondary">{{ active_tag }}</span> <a href="/" class="btn btn-sm btn-outline-secondary ms-2">Clear</a></h5>
-        {% endif %}
+        <!-- MAIN CONTENT -->
+        <div class="flex-grow-1 p-4">
 
-        <!-- Bulk action bar (hidden until a checkbox is ticked) -->
-        <form id="bulkForm" action="/photos/tags/bulk" method="post">
-            <div id="bulkBar" class="card shadow-sm p-3 mb-4 d-none">
-                <div class="d-flex align-items-center gap-2 flex-wrap">
-                    <span id="selectedCount" class="text-muted small"></span>
-                    <select name="tag" id="bulkTagSelect" class="form-select form-select-sm" style="max-width:180px;">
-                        <option value="">— existing tag —</option>
-                        {% for t in all_tags %}
-                        <option value="{{ t }}">{{ t }}</option>
-                        {% endfor %}
-                    </select>
-                    <span class="text-muted small">or</span>
-                    <input type="text" id="bulkTagNew" class="form-control form-control-sm" style="max-width:180px;" placeholder="New tag">
-                    <button type="submit" class="btn btn-sm btn-success">Apply Tag</button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearSelection()">Clear</button>
-                </div>
+            <!-- Upload form (home only) -->
+            {% if not active_tag %}
+            <div class="card shadow-sm p-4 mb-4">
+                <h5>Upload New Image</h5>
+                <form action="/upload" method="post" enctype="multipart/form-data" class="row g-3">
+                    <div class="col-auto">
+                        <input type="file" name="photos" class="form-control" accept="image/*" multiple required>
+                    </div>
+                    <div class="col-auto">
+                        <input type="text" name="tags" class="form-control" placeholder="Tags (comma-separated)">
+                    </div>
+                    <div class="col-auto">
+                        <button type="submit" class="btn btn-primary">Upload to Vault</button>
+                    </div>
+                </form>
             </div>
+            {% endif %}
 
-            <div class="row row-cols-1 row-cols-md-5 g-4">
-                {% for item in items %}
-                <div class="col">
-                    <div class="card h-100 shadow-sm img-card">
-                        <div class="position-relative">
-                            <input type="checkbox" name="filenames" value="{{ item.name }}"
-                                   class="photo-check form-check-input position-absolute top-0 start-0 m-2"
-                                   style="width:1.3em;height:1.3em;z-index:1;" onchange="updateBulkBar()">
-                            <img src="{{ item.thumb_url }}" class="card-img-top gallery-img" alt="...">
-                        </div>
-                        <div class="card-body text-center">
-                            <h6 class="card-title text-truncate">{{ item.name }}</h6>
-                            {% if item.tags %}
-                            <div class="mb-2">
-                                {% for tag in item.tags %}
-                                <a href="/tag/{{ tag }}" class="badge bg-secondary text-decoration-none me-1">{{ tag }}</a>
-                                {% endfor %}
-                            </div>
-                            {% endif %}
-                            <a href="{{ item.orig_url }}" target="_blank" class="btn btn-sm btn-outline-primary">View Original</a>
-                            <form action="/photo/{{ item.name }}/tags" method="post" class="mt-2 d-flex gap-1">
-                                <input type="text" name="tags" class="form-control form-control-sm"
-                                       placeholder="Edit tags…" value="{{ item.tags | join(', ') }}">
-                                <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
-                            </form>
-                        </div>
+            {% if active_tag %}
+            <h5 class="mb-3">
+                Photos tagged: <span class="badge bg-secondary">{{ active_tag }}</span>
+                <a href="/" class="btn btn-sm btn-outline-secondary ms-2">← Back</a>
+            </h5>
+            {% endif %}
+
+            <!-- Bulk action bar -->
+            <form id="bulkForm" action="/photos/tags/bulk" method="post">
+                <div id="bulkBar" class="card shadow-sm p-3 mb-4 d-none">
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <span id="selectedCount" class="text-muted small"></span>
+                        <select name="tag" id="bulkTagSelect" class="form-select form-select-sm" style="max-width:180px;">
+                            <option value="">— existing tag —</option>
+                            {% for t in all_tags %}
+                            <option value="{{ t }}">{{ t }}</option>
+                            {% endfor %}
+                        </select>
+                        <span class="text-muted small">or</span>
+                        <input type="text" id="bulkTagNew" class="form-control form-control-sm" style="max-width:180px;" placeholder="New tag">
+                        <button type="submit" class="btn btn-sm btn-success">Apply Tag</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearSelection()">Clear</button>
                     </div>
                 </div>
-                {% endfor %}
-            </div>
-        </form>
 
-        {% if total_pages and total_pages > 1 %}
-        <nav class="mt-4 d-flex justify-content-center">
-            <ul class="pagination">
-                <li class="page-item {% if page == 1 %}disabled{% endif %}">
-                    <a class="page-link" href="?page={{ page - 1 }}">Previous</a>
-                </li>
-                {% for p in range(1, total_pages + 1) %}
-                <li class="page-item {% if p == page %}active{% endif %}">
-                    <a class="page-link" href="?page={{ p }}">{{ p }}</a>
-                </li>
-                {% endfor %}
-                <li class="page-item {% if page == total_pages %}disabled{% endif %}">
-                    <a class="page-link" href="?page={{ page + 1 }}">Next</a>
-                </li>
-            </ul>
-        </nav>
-        {% endif %}
-    </div>
+                <div class="row row-cols-1 row-cols-md-4 g-4">
+                    {% for item in items %}
+                    <div class="col">
+                        <div class="card h-100 shadow-sm img-card">
+                            <div class="position-relative">
+                                <input type="checkbox" name="filenames" value="{{ item.name }}"
+                                       class="photo-check form-check-input position-absolute top-0 start-0 m-2"
+                                       style="width:1.3em;height:1.3em;z-index:1;" onchange="updateBulkBar()">
+                                <img src="{{ item.thumb_url }}" class="card-img-top gallery-img" alt="...">
+                            </div>
+                            <div class="card-body text-center">
+                                <h6 class="card-title text-truncate">{{ item.name }}</h6>
+                                {% if item.tags %}
+                                <div class="mb-2">
+                                    {% for tag in item.tags %}
+                                    <a href="/tag/{{ tag }}" class="badge bg-secondary text-decoration-none me-1">{{ tag }}</a>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                                <a href="{{ item.orig_url }}" target="_blank" class="btn btn-sm btn-outline-primary">View Original</a>
+                                <form action="/photo/{{ item.name }}/tags" method="post" class="mt-2 d-flex gap-1">
+                                    <input type="text" name="tags" class="form-control form-control-sm"
+                                           placeholder="Edit tags…" value="{{ item.tags | join(', ') }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </form>
+
+            {% if total_pages and total_pages > 1 %}
+            <nav class="mt-4 d-flex justify-content-center">
+                <ul class="pagination">
+                    <li class="page-item {% if page == 1 %}disabled{% endif %}">
+                        <a class="page-link" href="?page={{ page - 1 }}">Previous</a>
+                    </li>
+                    {% for p in range(1, total_pages + 1) %}
+                    <li class="page-item {% if p == page %}active{% endif %}">
+                        <a class="page-link" href="?page={{ p }}">{{ p }}</a>
+                    </li>
+                    {% endfor %}
+                    <li class="page-item {% if page == total_pages %}disabled{% endif %}">
+                        <a class="page-link" href="?page={{ page + 1 }}">Next</a>
+                    </li>
+                </ul>
+            </nav>
+            {% endif %}
+
+        </div><!-- /main -->
+    </div><!-- /d-flex -->
 
     <script>
         function updateBulkBar() {
@@ -142,7 +152,6 @@
             document.querySelectorAll('.photo-check').forEach(c => c.checked = false);
             updateBulkBar();
         }
-        // If user types a new tag, clear the dropdown selection and vice versa
         document.getElementById('bulkTagNew').addEventListener('input', function() {
             if (this.value) document.getElementById('bulkTagSelect').value = '';
         });
@@ -154,17 +163,13 @@
             const newTag = document.getElementById('bulkTagNew').value.trim();
             const tag = newTag || select;
             if (!tag) { e.preventDefault(); alert('Please enter or select a tag.'); return; }
-            // Write resolved tag into a hidden input so it submits correctly for new tags
             let hidden = document.getElementById('bulkTagResolved');
             if (!hidden) {
                 hidden = document.createElement('input');
-                hidden.type = 'hidden';
-                hidden.name = 'tag';
-                hidden.id = 'bulkTagResolved';
+                hidden.type = 'hidden'; hidden.name = 'tag'; hidden.id = 'bulkTagResolved';
                 this.appendChild(hidden);
             }
             hidden.value = tag;
-            // Disable the select so it doesn't submit a conflicting value
             document.getElementById('bulkTagSelect').disabled = true;
         });
     </script>
