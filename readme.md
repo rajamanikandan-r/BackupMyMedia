@@ -51,5 +51,5 @@ gcloud run deploy gallery-service \
   --region us-central1 \
   --project life-begins-at-40 \
   --update-secrets=/secrets/key.json=gcp-service-account-key:latest \
-  --set-env-vars KEY_PATH=/secrets/key.json
+  --set-env-vars KEY_PATH=/secrets/key.json,GOOGLE_CLIENT_ID=<your-client-id>,GOOGLE_CLIENT_SECRET=<your-client-secret>,SECRET_KEY=<random-secret-string>
 ```

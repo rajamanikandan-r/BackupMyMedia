@@ -1,21 +1,76 @@
 import io
 import os
-from flask import Flask, render_template, request, redirect, url_for
+from functools import wraps
+from flask import Flask, render_template, request, redirect, url_for, session
+from authlib.integrations.flask_client import OAuth
+from dotenv import load_dotenv
 from google.cloud import storage, firestore
 from PIL import Image
 from PIL.ExifTags import TAGS
 
+load_dotenv()
+
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
 # --- CONFIGURATION ---
 BUCKET_NAME = "lb40-bucket"
 PROJECT_ID = "life-begins-at-40"
 KEY_PATH = os.environ.get("KEY_PATH", "life-begins-at-40-a0cf724dc4fe.json")
 
+ALLOWED_EMAILS = {
+    "rmnforever@gmail.com",
+    "sumitradevi@gmail.com",
+    "sumitradevi.usa@gmail.com",
+}
+
+oauth = OAuth(app)
+oauth.register(
+    name="google",
+    client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+    client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+    client_kwargs={"scope": "openid email"},
+)
+
 storage_client = storage.Client.from_service_account_json(KEY_PATH)
 db = firestore.Client.from_service_account_json(
     KEY_PATH, project=PROJECT_ID, database="media-metadata"
 )
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("user"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route("/login")
+def login():
+    if session.get("user"):
+        return redirect(url_for("index"))
+    return render_template("login.html")
+
+@app.route("/login/google")
+def login_google():
+    redirect_uri = url_for("auth_callback", _external=True)
+    return oauth.google.authorize_redirect(redirect_uri)
+
+@app.route("/auth/callback")
+def auth_callback():
+    token = oauth.google.authorize_access_token()
+    user_info = token.get("userinfo")
+    email = user_info.get("email", "").lower()
+    if email not in ALLOWED_EMAILS:
+        return render_template("login.html", error="Access denied. Your account is not authorised.")
+    session["user"] = email
+    return redirect(url_for("index"))
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 def get_exif_data(file_stream):
     try:
@@ -40,6 +95,7 @@ def create_thumbnail(file_stream):
     return thumb_io
 
 @app.route("/")
+@login_required
 def index():
     try:
         docs = db.collection("images").stream()
@@ -70,12 +126,14 @@ def index():
         return f"Error: {e}", 500
 
 @app.route("/photo/<filename>/tags", methods=["POST"])
+@login_required
 def update_tags(filename):
     tags = [t.strip().lower() for t in request.form.get("tags", "").split(",") if t.strip()]
     db.collection("images").document(filename).update({"tags": tags})
     return redirect(url_for("index"))
 
 @app.route("/upload", methods=["POST"])
+@login_required
 def upload():
     files = request.files.getlist("photos")
     tags = [t.strip().lower() for t in request.form.get("tags", "").split(",") if t.strip()]
@@ -111,6 +169,7 @@ def upload():
     return redirect(url_for("index"))
 
 @app.route("/photos/tags/bulk", methods=["POST"])
+@login_required
 def bulk_tag():
     filenames = request.form.getlist("filenames")
     tag = request.form.get("tag", "").strip().lower()
