@@ -43,23 +43,41 @@ def index():
     try:
         docs = db.collection("images").stream()
         items = []
+        all_tags = set()
         for doc in docs:
             data = doc.to_dict()
+            tags = data.get('tags', [])
+            all_tags.update(tags)
             items.append({
                 'name': data.get('name', 'Unknown'),
                 'camera': data.get('camera', 'Unknown'),
                 'make': data.get('make', 'Unknown'),
                 'date_taken': data.get('date_taken', 'Unknown'),
                 'thumb_url': data.get('thumb_url'),
-                'orig_url': data.get('orig_url')
+                'orig_url': data.get('orig_url'),
+                'tags': tags
             })
-        return render_template("gallery.html", items=items)
+        page = max(1, request.args.get('page', 1, type=int))
+        per_page = 50
+        total = len(items)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        items = items[(page - 1) * per_page : page * per_page]
+        return render_template("gallery.html", items=items, all_tags=sorted(all_tags),
+                               page=page, total_pages=total_pages)
     except Exception as e:
         return f"Error: {e}", 500
+
+@app.route("/photo/<filename>/tags", methods=["POST"])
+def update_tags(filename):
+    tags = [t.strip().lower() for t in request.form.get("tags", "").split(",") if t.strip()]
+    db.collection("images").document(filename).update({"tags": tags})
+    return redirect(url_for("index"))
 
 @app.route("/upload", methods=["POST"])
 def upload():
     files = request.files.getlist("photos")
+    tags = [t.strip().lower() for t in request.form.get("tags", "").split(",") if t.strip()]
     bucket = storage_client.bucket(BUCKET_NAME)
     for file in files:
         if file.filename:
@@ -86,9 +104,47 @@ def upload():
                 "camera": metadata.get('Model', 'Unknown'),
                 "make": metadata.get('Make', 'Unknown'),
                 "date_taken": metadata.get('DateTimeOriginal', 'Unknown'),
-                "uploaded_at": firestore.SERVER_TIMESTAMP
+                "uploaded_at": firestore.SERVER_TIMESTAMP,
+                "tags": tags
             })
     return redirect(url_for("index"))
+
+@app.route("/photos/tags/bulk", methods=["POST"])
+def bulk_tag():
+    filenames = request.form.getlist("filenames")
+    tag = request.form.get("tag", "").strip().lower()
+    if tag and filenames:
+        batch = db.batch()
+        for filename in filenames:
+            ref = db.collection("images").document(filename)
+            batch.update(ref, {"tags": firestore.ArrayUnion([tag])})
+        batch.commit()
+    return redirect(url_for("index"))
+
+@app.route("/tag/<tag_name>")
+def tag(tag_name):
+    try:
+        all_docs = db.collection("images").stream()
+        all_tags = set()
+        for doc in all_docs:
+            all_tags.update(doc.to_dict().get('tags', []))
+
+        docs = db.collection("images").where("tags", "array_contains", tag_name.lower()).stream()
+        items = []
+        for doc in docs:
+            data = doc.to_dict()
+            items.append({
+                'name': data.get('name', 'Unknown'),
+                'camera': data.get('camera', 'Unknown'),
+                'make': data.get('make', 'Unknown'),
+                'date_taken': data.get('date_taken', 'Unknown'),
+                'thumb_url': data.get('thumb_url'),
+                'orig_url': data.get('orig_url'),
+                'tags': data.get('tags', [])
+            })
+        return render_template("gallery.html", items=items, active_tag=tag_name.lower(), all_tags=sorted(all_tags))
+    except Exception as e:
+        return f"Error: {e}", 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
