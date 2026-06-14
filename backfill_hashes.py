@@ -5,16 +5,15 @@ Run from Cloud Shell (us-central1) to avoid GCS egress charges.
 """
 import hashlib
 import io
-import os
 from google.cloud import storage, firestore
 from tqdm import tqdm
 
 PROJECT_ID = "life-begins-at-40"
 BUCKET_NAME = "lb40-bucket"
-KEY_PATH = os.environ.get("KEY_PATH", "life-begins-at-40-a0cf724dc4fe.json")
+DATABASE = "media-metadata"
 
-storage_client = storage.Client.from_service_account_json(KEY_PATH)
-db = firestore.Client.from_service_account_json(KEY_PATH, project=PROJECT_ID, database="media-metadata")
+storage_client = storage.Client(project=PROJECT_ID)
+db = firestore.Client(project=PROJECT_ID, database=DATABASE)
 bucket = storage_client.bucket(BUCKET_NAME)
 
 def backfill():
