@@ -75,6 +75,8 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
+MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
+
 def get_exif_data(file_stream):
     try:
         img = Image.open(file_stream)
@@ -83,11 +85,52 @@ def get_exif_data(file_stream):
         if info:
             for tag, value in info.items():
                 decoded = TAGS.get(tag, tag)
-                if decoded in ['Make', 'Model', 'DateTimeOriginal']:
-                    exif_data[decoded] = str(value)
+                if decoded in ['Make', 'Model', 'DateTimeOriginal', 'GPSInfo']:
+                    exif_data[decoded] = value
         return exif_data
     except Exception:
         return {}
+
+def _to_decimal(dms):
+    d, m, s = dms
+    return float(d) + float(m) / 60 + float(s) / 3600
+
+def get_city_from_gps(gps_info):
+    try:
+        lat = _to_decimal(gps_info[2])
+        if gps_info[1] == 'S':
+            lat = -lat
+        lng = _to_decimal(gps_info[4])
+        if gps_info[3] == 'W':
+            lng = -lng
+        url = (
+            f"https://maps.googleapis.com/maps/api/geocode/json"
+            f"?latlng={lat},{lng}&result_type=locality&key={MAPS_API_KEY}"
+        )
+        import urllib.request, json
+        with urllib.request.urlopen(url) as resp:
+            data = json.loads(resp.read())
+        results = data.get("results", [])
+        if results:
+            return results[0]["address_components"][0]["long_name"].lower()
+    except Exception:
+        pass
+    return None
+
+def generate_auto_tags(metadata):
+    tags = []
+    date_str = metadata.get('DateTimeOriginal', '')
+    if date_str and len(date_str) >= 4:
+        tags.append(date_str[:4])  # year
+    camera = metadata.get('Model')
+    if camera and str(camera).strip():
+        tags.append(str(camera).strip().lower())
+    gps_info = metadata.get('GPSInfo')
+    if gps_info and MAPS_API_KEY:
+        city = get_city_from_gps(gps_info)
+        if city:
+            tags.append(city)
+    return tags
 
 def create_thumbnail(file_stream):
     img = Image.open(file_stream)
@@ -143,32 +186,61 @@ def upload():
     bucket = storage_client.bucket(BUCKET_NAME)
     for file in files:
         if file.filename:
-            # 1. Extract Metadata
             file.seek(0)
             metadata = get_exif_data(file)
-            
-            # 2. Upload Original
+
             file.seek(0)
             orig_blob = bucket.blob(f"originals/{file.filename}")
             orig_blob.upload_from_file(file, content_type=file.content_type)
-            
-            # 3. Upload Thumbnail
+
             file.seek(0)
             thumb_io = create_thumbnail(file)
             thumb_blob = bucket.blob(f"thumbnails/{file.filename}")
             thumb_blob.upload_from_file(thumb_io, content_type="image/jpeg")
-            
-            # 4. Save to Firestore (FLAT FORMAT)
+
+            auto_tags = generate_auto_tags(metadata)
+            all_tags = list(set(tags + auto_tags))
+
             db.collection("images").document(file.filename).set({
                 "name": file.filename,
                 "orig_url": orig_blob.public_url,
                 "thumb_url": thumb_blob.public_url,
-                "camera": metadata.get('Model', 'Unknown'),
-                "make": metadata.get('Make', 'Unknown'),
-                "date_taken": metadata.get('DateTimeOriginal', 'Unknown'),
+                "camera": str(metadata.get('Model', 'Unknown')),
+                "make": str(metadata.get('Make', 'Unknown')),
+                "date_taken": str(metadata.get('DateTimeOriginal', 'Unknown')),
                 "uploaded_at": firestore.SERVER_TIMESTAMP,
-                "tags": tags
+                "tags": all_tags,
+                "auto_tagged": True,
             })
+    return redirect(url_for("index"))
+
+@app.route("/autotag")
+@login_required
+def autotag():
+    force = request.args.get("force", "0") == "1"
+    docs = db.collection("images").stream()
+    updated = 0
+    for doc in docs:
+        data = doc.to_dict()
+        if not force and data.get("auto_tagged"):
+            continue
+        # Re-fetch image from GCS to extract EXIF
+        try:
+            import urllib.request
+            orig_url = data.get("orig_url")
+            if not orig_url:
+                continue
+            with urllib.request.urlopen(orig_url) as resp:
+                file_bytes = io.BytesIO(resp.read())
+            metadata = get_exif_data(file_bytes)
+            auto_tags = generate_auto_tags(metadata)
+            if auto_tags:
+                existing = data.get("tags", [])
+                merged = list(set(existing + auto_tags))
+                doc.reference.update({"tags": merged, "auto_tagged": True})
+                updated += 1
+        except Exception:
+            continue
     return redirect(url_for("index"))
 
 @app.route("/photos/tags/bulk", methods=["POST"])

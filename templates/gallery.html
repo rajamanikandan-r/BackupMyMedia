@@ -15,7 +15,12 @@
     <nav class="navbar navbar-dark bg-dark mb-4">
         <div class="container">
             <span class="navbar-brand">📸 My Cloud Gallery</span>
-            <a href="/logout" class="btn btn-outline-light btn-sm">Logout</a>
+            <div class="d-flex gap-2">
+                <a href="/autotag" class="btn btn-outline-light btn-sm">Auto-tag New</a>
+                <a href="/autotag?force=1" class="btn btn-outline-warning btn-sm"
+                   onclick="return confirm('Re-tag all images? This may take a while.')">Auto-tag All</a>
+                <a href="/logout" class="btn btn-outline-light btn-sm">Logout</a>
+            </div>
         </div>
     </nav>
 
