@@ -137,7 +137,7 @@ def index():
         page = min(page, total_pages)
         items = items[(page - 1) * per_page : page * per_page]
         return render_template("gallery.html", items=items, all_tags=sorted(all_tags),
-                               page=page, total_pages=total_pages)
+                               page=page, total_pages=total_pages, total=total)
     except Exception as e:
         return f"Error: {e}", 500
 

@@ -23,6 +23,7 @@
     <nav class="navbar navbar-dark bg-dark mb-0">
         <div class="container-fluid">
             <span class="navbar-brand">📸 My Cloud Gallery</span>
+            {% if total %}<span class="text-white-50 small me-3">{{ total }} photos</span>{% endif %}
             <div class="d-flex gap-2">
                 <a href="/autotag" class="btn btn-outline-light btn-sm">Auto-tag New</a>
                 <a href="/autotag?force=1" class="btn btn-outline-warning btn-sm"
