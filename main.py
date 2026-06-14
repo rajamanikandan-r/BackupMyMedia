@@ -1,4 +1,5 @@
 import io
+import os
 from flask import Flask, render_template, request, redirect, url_for
 from google.cloud import storage, firestore
 from PIL import Image
@@ -9,7 +10,7 @@ app = Flask(__name__)
 # --- CONFIGURATION ---
 BUCKET_NAME = "lb40-bucket"
 PROJECT_ID = "life-begins-at-40"
-KEY_PATH = "/secrets/key.json"
+KEY_PATH = os.environ.get("KEY_PATH", "life-begins-at-40-a0cf724dc4fe.json")
 
 storage_client = storage.Client.from_service_account_json(KEY_PATH)
 db = firestore.Client.from_service_account_json(
