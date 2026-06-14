@@ -31,6 +31,16 @@ def get_exif_data(path):
     except Exception:
         return {}
 
+def auto_tags_from_record(data):
+    tags = []
+    date_str = data.get('date_taken', '')
+    if date_str and len(date_str) >= 4 and date_str[:4].isdigit():
+        tags.append(date_str[:4])
+    camera = data.get('camera', '')
+    if camera and camera != 'Unknown':
+        tags.append(camera.strip().lower())
+    return tags
+
 def upload_image(file_path, quiet=False):
     filename = os.path.basename(file_path)
     bucket = storage_client.bucket(BUCKET_NAME)
@@ -54,16 +64,19 @@ def upload_image(file_path, quiet=False):
     # 3. Get Metadata
     metadata = get_exif_data(file_path)
 
-    # 4. Save to Firestore (FLAT FORMAT)
-    db.collection("images").document(filename).set({
+    # 4. Save to Firestore with auto-tags
+    record = {
         "name": filename,
         "orig_url": orig_url,
         "thumb_url": thumb_url,
         "camera": metadata.get('Model', 'Unknown'),
         "make": metadata.get('Make', 'Unknown'),
         "date_taken": metadata.get('DateTimeOriginal', 'Unknown'),
-        "uploaded_at": firestore.SERVER_TIMESTAMP
-    })
+        "uploaded_at": firestore.SERVER_TIMESTAMP,
+        "auto_tagged": True,
+    }
+    record["tags"] = auto_tags_from_record(record)
+    db.collection("images").document(filename).set(record)
     if not quiet:
         print(f"Uploaded: {filename}")
 
