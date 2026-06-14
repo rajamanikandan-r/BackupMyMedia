@@ -9,7 +9,7 @@ app = Flask(__name__)
 # --- CONFIGURATION ---
 BUCKET_NAME = "lb40-bucket"
 PROJECT_ID = "life-begins-at-40"
-KEY_PATH = "life-begins-at-40-a0cf724dc4fe.json"
+KEY_PATH = "/secrets/key.json"
 
 storage_client = storage.Client.from_service_account_json(KEY_PATH)
 db = firestore.Client.from_service_account_json(
