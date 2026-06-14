@@ -1,3 +1,4 @@
+import hashlib
 import os
 import argparse
 import io
@@ -43,6 +44,14 @@ def auto_tags_from_record(data):
 
 def upload_image(file_path, quiet=False):
     filename = os.path.basename(file_path)
+
+    with open(file_path, "rb") as f:
+        content_hash = hashlib.md5(f.read()).hexdigest()
+
+    existing = db.collection("images").where("content_hash", "==", content_hash).limit(1).stream()
+    if any(True for _ in existing):
+        return False  # duplicate
+
     bucket = storage_client.bucket(BUCKET_NAME)
 
     # 1. Upload Original
@@ -73,12 +82,14 @@ def upload_image(file_path, quiet=False):
         "make": metadata.get('Make', 'Unknown'),
         "date_taken": metadata.get('DateTimeOriginal', 'Unknown'),
         "uploaded_at": firestore.SERVER_TIMESTAMP,
+        "content_hash": content_hash,
         "auto_tagged": True,
     }
     record["tags"] = auto_tags_from_record(record)
     db.collection("images").document(filename).set(record)
     if not quiet:
         print(f"Uploaded: {filename}")
+    return True
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -88,7 +99,9 @@ if __name__ == "__main__":
     target_path = os.path.abspath(args.dir)
 
     if os.path.isfile(target_path):
-        upload_image(target_path)
+        uploaded = upload_image(target_path)
+        if not uploaded:
+            print("Skipped: duplicate.")
     elif os.path.isdir(target_path):
         files_to_upload = [f for f in os.listdir(target_path) 
                            if f.lower().endswith(('jpg', 'jpeg', 'png'))]
@@ -97,9 +110,13 @@ if __name__ == "__main__":
             print("No images found.")
         else:
             print(f"🚀 Starting upload of {len(files_to_upload)} images...")
+            uploaded, skipped = 0, 0
             for f in tqdm(files_to_upload, desc="Progress", unit="photo"):
                 try:
-                    upload_image(os.path.join(target_path, f), quiet=True)
+                    if upload_image(os.path.join(target_path, f), quiet=True):
+                        uploaded += 1
+                    else:
+                        skipped += 1
                 except Exception:
-                    print("Error uploading {f}")
-            print("\n✅ All uploads complete!")
+                    print(f"Error uploading {f}")
+            print(f"\n✅ {uploaded} uploaded, {skipped} skipped (duplicates).")

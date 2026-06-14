@@ -1,7 +1,8 @@
+import hashlib
 import io
 import os
 from functools import wraps
-from flask import Flask, render_template, request, redirect, url_for, session
+from flask import Flask, render_template, request, redirect, url_for, session, flash
 from authlib.integrations.flask_client import OAuth
 from dotenv import load_dotenv
 from google.cloud import storage, firestore
@@ -153,35 +154,51 @@ def upload():
     files = request.files.getlist("photos")
     tags = [t.strip().lower() for t in request.form.get("tags", "").split(",") if t.strip()]
     bucket = storage_client.bucket(BUCKET_NAME)
+    uploaded, skipped = 0, 0
     for file in files:
-        if file.filename:
-            file.seek(0)
-            metadata = get_exif_data(file)
+        if not file.filename:
+            continue
+        file.seek(0)
+        content_hash = hashlib.md5(file.read()).hexdigest()
+        existing = db.collection("images").where("content_hash", "==", content_hash).limit(1).stream()
+        if any(True for _ in existing):
+            skipped += 1
+            continue
 
-            file.seek(0)
-            orig_blob = bucket.blob(f"originals/{file.filename}")
-            orig_blob.upload_from_file(file, content_type=file.content_type)
+        file.seek(0)
+        metadata = get_exif_data(file)
 
-            file.seek(0)
-            thumb_io = create_thumbnail(file)
-            thumb_blob = bucket.blob(f"thumbnails/{file.filename}")
-            thumb_blob.upload_from_file(thumb_io, content_type="image/jpeg")
+        file.seek(0)
+        orig_blob = bucket.blob(f"originals/{file.filename}")
+        orig_blob.upload_from_file(file, content_type=file.content_type)
 
-            record = {
-                "name": file.filename,
-                "orig_url": orig_blob.public_url,
-                "thumb_url": thumb_blob.public_url,
-                "camera": metadata.get('Model', 'Unknown'),
-                "make": metadata.get('Make', 'Unknown'),
-                "date_taken": metadata.get('DateTimeOriginal', 'Unknown'),
-                "uploaded_at": firestore.SERVER_TIMESTAMP,
-                "auto_tagged": False,
-                "tags": tags,
-            }
-            auto_tags = auto_tags_from_record(record)
-            record["tags"] = list(set(tags + auto_tags))
-            record["auto_tagged"] = True
-            db.collection("images").document(file.filename).set(record)
+        file.seek(0)
+        thumb_io = create_thumbnail(file)
+        thumb_blob = bucket.blob(f"thumbnails/{file.filename}")
+        thumb_blob.upload_from_file(thumb_io, content_type="image/jpeg")
+
+        record = {
+            "name": file.filename,
+            "orig_url": orig_blob.public_url,
+            "thumb_url": thumb_blob.public_url,
+            "camera": metadata.get('Model', 'Unknown'),
+            "make": metadata.get('Make', 'Unknown'),
+            "date_taken": metadata.get('DateTimeOriginal', 'Unknown'),
+            "uploaded_at": firestore.SERVER_TIMESTAMP,
+            "content_hash": content_hash,
+            "auto_tagged": False,
+            "tags": tags,
+        }
+        auto_tags = auto_tags_from_record(record)
+        record["tags"] = list(set(tags + auto_tags))
+        record["auto_tagged"] = True
+        db.collection("images").document(file.filename).set(record)
+        uploaded += 1
+
+    msg = f"{uploaded} photo(s) uploaded."
+    if skipped:
+        msg += f" {skipped} skipped (duplicate)."
+    flash(msg)
     return redirect(url_for("index"))
 
 @app.route("/autotag")
