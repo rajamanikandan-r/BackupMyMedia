@@ -103,8 +103,12 @@ if __name__ == "__main__":
         if not uploaded:
             print("Skipped: duplicate.")
     elif os.path.isdir(target_path):
-        files_to_upload = [f for f in os.listdir(target_path) 
-                           if f.lower().endswith(('jpg', 'jpeg', 'png'))]
+        files_to_upload = [
+            os.path.join(root, f)
+            for root, _, files in os.walk(target_path)
+            for f in files
+            if f.lower().endswith(('jpg', 'jpeg', 'png'))
+        ]
         
         if not files_to_upload:
             print("No images found.")
@@ -113,7 +117,7 @@ if __name__ == "__main__":
             uploaded, skipped = 0, 0
             for f in tqdm(files_to_upload, desc="Progress", unit="photo"):
                 try:
-                    if upload_image(os.path.join(target_path, f), quiet=True):
+                    if upload_image(f, quiet=True):
                         uploaded += 1
                     else:
                         skipped += 1
