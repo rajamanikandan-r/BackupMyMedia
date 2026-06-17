@@ -115,29 +115,16 @@ def create_thumbnail(file_stream):
 def index():
     try:
         docs = db.collection("images").stream()
-        items = []
         all_tags = set()
+        total = 0
+        total_size = 0
         for doc in docs:
             data = doc.to_dict()
-            tags = data.get('tags', [])
-            all_tags.update(tags)
-            items.append({
-                'name': data.get('name', 'Unknown'),
-                'camera': data.get('camera', 'Unknown'),
-                'make': data.get('make', 'Unknown'),
-                'date_taken': data.get('date_taken', 'Unknown'),
-                'thumb_url': data.get('thumb_url'),
-                'orig_url': data.get('orig_url'),
-                'tags': tags
-            })
-        page = max(1, request.args.get('page', 1, type=int))
-        per_page = 50
-        total = len(items)
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        page = min(page, total_pages)
-        items = items[(page - 1) * per_page : page * per_page]
-        return render_template("gallery.html", items=items, all_tags=sorted(all_tags),
-                               page=page, total_pages=total_pages, total=total)
+            all_tags.update(data.get('tags', []))
+            total += 1
+            total_size += data.get('file_size', 0)
+        return render_template("gallery.html", all_tags=sorted(all_tags),
+                               total=total, total_size=total_size)
     except Exception as e:
         return f"Error: {e}", 500
 
@@ -159,7 +146,9 @@ def upload():
         if not file.filename:
             continue
         file.seek(0)
-        content_hash = hashlib.md5(file.read()).hexdigest()
+        file_bytes = file.read()
+        file_size = len(file_bytes)
+        content_hash = hashlib.md5(file_bytes).hexdigest()
         existing = db.collection("images").where("content_hash", "==", content_hash).limit(1).stream()
         if any(True for _ in existing):
             skipped += 1
@@ -186,6 +175,7 @@ def upload():
             "date_taken": metadata.get('DateTimeOriginal', 'Unknown'),
             "uploaded_at": firestore.SERVER_TIMESTAMP,
             "content_hash": content_hash,
+            "file_size": file_size,
             "auto_tagged": False,
             "tags": tags,
         }

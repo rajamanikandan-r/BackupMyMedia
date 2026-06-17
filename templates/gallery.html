@@ -48,6 +48,22 @@
 
             <!-- Upload form (home only) -->
             {% if not active_tag %}
+            <div class="row g-3 mb-4">
+                <div class="col-auto">
+                    <div class="card shadow-sm p-4 text-center" style="min-width:160px;">
+                        <div class="fs-1 fw-bold text-primary">{{ total }}</div>
+                        <div class="text-muted">Photos in Vault</div>
+                    </div>
+                </div>
+                {% if total_size %}
+                <div class="col-auto">
+                    <div class="card shadow-sm p-4 text-center" style="min-width:160px;">
+                        <div class="fs-1 fw-bold text-success">{{ "%.1f"|format(total_size / 1073741824) }} GB</div>
+                        <div class="text-muted">Total Size</div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
             <div class="card shadow-sm p-4 mb-4">
                 <h5>Upload New Image</h5>
                 <form action="/upload" method="post" enctype="multipart/form-data" class="row g-3">
