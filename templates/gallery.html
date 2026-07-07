@@ -109,6 +109,8 @@
                         <span class="text-muted small">or</span>
                         <input type="text" id="bulkTagNew" class="form-control form-control-sm" style="max-width:180px;" placeholder="New tag">
                         <button type="submit" class="btn btn-sm btn-success">Apply Tag</button>
+                        <button type="button" class="btn btn-sm btn-outline-info"
+                                onclick="submitBulkLocation()">📍 Tag Location</button>
                         <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearSelection()">Clear</button>
                     </div>
                 </div>
@@ -176,6 +178,10 @@
         function clearSelection() {
             document.querySelectorAll('.photo-check').forEach(c => c.checked = false);
             updateBulkBar();
+        }
+        function submitBulkLocation() {
+            document.getElementById('bulkForm').action = '/photos/location/bulk';
+            document.getElementById('bulkForm').submit();
         }
         document.getElementById('bulkTagNew').addEventListener('input', function() {
             if (this.value) document.getElementById('bulkTagSelect').value = '';

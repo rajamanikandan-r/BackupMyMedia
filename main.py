@@ -238,6 +238,81 @@ def bulk_tag():
         batch.commit()
     return redirect(url_for("index"))
 
+
+@app.route("/photos/location/bulk", methods=["POST"])
+@login_required
+def bulk_location():
+    filenames = request.form.getlist("filenames")
+    if not filenames:
+        flash("No photos selected.")
+        return redirect(url_for("index"))
+
+    updated, skipped, errors = 0, 0, 0
+    bucket = storage_client.bucket(BUCKET_NAME)
+
+    for filename in filenames:
+        try:
+            doc_ref = db.collection("images").document(filename)
+            doc = doc_ref.get()
+            if not doc.exists:
+                errors += 1
+                continue
+            data = doc.to_dict()
+
+            # Skip if location already set
+            if data.get("location"):
+                skipped += 1
+                continue
+
+            location, lat, lon = None, None, None
+
+            # Strategy 1: use stored coords — no download
+            stored_lat = data.get("latitude")
+            stored_lon = data.get("longitude")
+            if stored_lat is not None and stored_lon is not None:
+                from gps_location import reverse_geocode
+                location = reverse_geocode(float(stored_lat), float(stored_lon))
+                lat, lon = float(stored_lat), float(stored_lon)
+
+            # Strategy 2: download first 64 KB from GCS
+            if location is None:
+                blob = bucket.blob(f"originals/{filename}")
+                if blob.exists():
+                    buf = io.BytesIO()
+                    blob.download_to_file(buf, start=0, end=65535, timeout=30)
+                    buf.seek(0)
+                    location_tag, lat, lon = get_location_tag(buf)
+                    if location_tag:
+                        from gps_location import reverse_geocode
+                        location = reverse_geocode(lat, lon)
+
+            if not location:
+                skipped += 1
+                continue
+
+            location_tag = location.lower()
+            existing_tags = data.get("tags") or []
+            new_tags = list(set(existing_tags + [location_tag]))
+            doc_ref.update({
+                "location": location,
+                "latitude": lat,
+                "longitude": lon,
+                "tags": new_tags,
+                "location_backfilled": True,
+            })
+            updated += 1
+
+        except Exception:
+            errors += 1
+
+    msg = f"Location tagged: {updated} photo(s)."
+    if skipped:
+        msg += f" {skipped} had no GPS data or already tagged."
+    if errors:
+        msg += f" {errors} error(s)."
+    flash(msg)
+    return redirect(url_for("index"))
+
 @app.route("/tag/<tag_name>")
 def tag(tag_name):
     try:
