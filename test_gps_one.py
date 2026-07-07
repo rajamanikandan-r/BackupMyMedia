@@ -19,7 +19,6 @@ from gps_location import get_location_tag
 PROJECT_ID  = "life-begins-at-40"
 BUCKET_NAME = "lb40-bucket"
 DATABASE    = "media-metadata"
-KEY_PATH    = "life-begins-at-40-a0cf724dc4fe.json"
 
 
 def test_record(bucket, data: dict):
@@ -55,10 +54,8 @@ def main():
                         help="Test a specific file by its Firestore document name")
     args = parser.parse_args()
 
-    db = firestore.Client.from_service_account_json(
-        KEY_PATH, project=PROJECT_ID, database=DATABASE
-    )
-    storage_client = storage.Client.from_service_account_json(KEY_PATH)
+    db = firestore.Client(project=PROJECT_ID, database=DATABASE)
+    storage_client = storage.Client(project=PROJECT_ID)
     bucket = storage_client.bucket(BUCKET_NAME)
 
     if args.name:
