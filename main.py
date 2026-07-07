@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from google.cloud import storage, firestore
 from PIL import Image
 from PIL.ExifTags import TAGS
+from gps_location import get_location_tag
 
 load_dotenv()
 
@@ -157,6 +158,10 @@ def upload():
         file.seek(0)
         metadata = get_exif_data(file)
 
+        # Extract GPS location from EXIF
+        file.seek(0)
+        location_tag, lat, lon = get_location_tag(file)
+
         file.seek(0)
         orig_blob = bucket.blob(f"originals/{file.filename}")
         orig_blob.upload_from_file(file, content_type=file.content_type)
@@ -178,8 +183,13 @@ def upload():
             "file_size": file_size,
             "auto_tagged": False,
             "tags": tags,
+            "location": location_tag,
+            "latitude": lat,
+            "longitude": lon,
         }
         auto_tags = auto_tags_from_record(record)
+        if location_tag:
+            auto_tags.append(location_tag)
         record["tags"] = list(set(tags + auto_tags))
         record["auto_tagged"] = True
         db.collection("images").document(file.filename).set(record)
