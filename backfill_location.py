@@ -1,11 +1,14 @@
 """
 Backfill GPS-based location tags for existing Firestore image records.
 
-Strategy (per record, in order):
+Only photos from GPS-capable smartphones are processed — dedicated cameras,
+scanners, and unknown devices are skipped immediately without any GCS download.
+
+Strategy (per phone record, in order):
   1. If the record already has latitude + longitude stored, reverse-geocode
-     directly — no download needed.
-  2. Otherwise, download the original file from GCS, extract GPS EXIF data,
-     then reverse-geocode.
+     directly — no GCS download needed.
+  2. Otherwise, download the first 64 KB from GCS and extract GPS EXIF.
+     (EXIF/APP1 is always at the start of a JPEG, so 64 KB is sufficient.)
   3. If no GPS data can be found by either method, the record is skipped.
 
 For each matched record the script:
@@ -15,30 +18,61 @@ For each matched record the script:
   - Sets `location_backfilled = True` so the script is safe to re-run
     (use --force to re-process already-backfilled records)
 
-Run from Cloud Shell (us-central1) to avoid GCS egress charges.
-
 Usage:
   python backfill_location.py [--force] [--dry-run] [--limit N]
-
-Options:
-  --force    Re-process records that already have a location tag.
-  --dry-run  Print what would be updated without writing to Firestore.
-  --limit N  Process at most N records (useful for testing).
 """
 
 import argparse
 import io
-import sys
 
 from google.cloud import firestore, storage
 from tqdm import tqdm
 
-from gps_location import extract_gps_coords, get_location_tag, reverse_geocode
+from gps_location import get_location_tag, reverse_geocode
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 PROJECT_ID = "life-begins-at-40"
 BUCKET_NAME = "lb40-bucket"
 DATABASE    = "media-metadata"
+# ───────────────────────────────────────────────────────────────────────────────
+
+# ── Phone detection ────────────────────────────────────────────────────────────
+# Camera makes/models that reliably embed GPS. Matched case-insensitively.
+PHONE_MAKES = (
+    "apple",
+    "samsung",
+    "google",
+    "huawei",
+    "xiaomi",
+    "oneplus",
+    "oppo",
+    "vivo",
+    "motorola",
+    "nokia",
+    "lg",
+    "sony",       # Sony Xperia phones (dedicated Sony cameras report "SONY" in caps)
+)
+
+PHONE_MODEL_PREFIXES = (
+    "iphone",
+    "ipad",       # iPads with cellular also embed GPS
+    "pixel",
+    "nexus",
+    "galaxy",
+    "redmi",
+    "mi ",
+)
+
+
+def is_phone(data: dict) -> bool:
+    """Return True if the camera make/model looks like a GPS-capable smartphone."""
+    make  = (data.get("make")   or "").lower().strip()
+    model = (data.get("camera") or "").lower().strip()
+    if any(make.startswith(m) for m in PHONE_MAKES):
+        return True
+    if any(model.startswith(m) for m in PHONE_MODEL_PREFIXES):
+        return True
+    return False
 # ───────────────────────────────────────────────────────────────────────────────
 
 
@@ -59,18 +93,19 @@ def geocode_from_stored_coords(data: dict) -> tuple:
 
 
 def geocode_from_gcs(bucket, filename: str) -> tuple:
-    """Download the original from GCS, extract GPS EXIF, reverse-geocode."""
+    """
+    Download only the first 64 KB of the original from GCS and extract GPS EXIF.
+    Returns (location_str, lat, lon) or (None, None, None) if no GPS found.
+    """
     blob = bucket.blob(f"originals/{filename}")
     if not blob.exists():
         return None, None, None
     buf = io.BytesIO()
-    blob.download_to_file(buf)
+    blob.download_to_file(buf, start=0, end=65535, timeout=300)
     buf.seek(0)
     location_tag, lat, lon = get_location_tag(buf)
     if location_tag is None:
         return None, None, None
-    # get_location_tag already lowercases; we want the original casing for the
-    # `location` field, so reverse-geocode again (hits cache, no extra request).
     location = reverse_geocode(lat, lon)
     return location, lat, lon
 
@@ -82,17 +117,22 @@ def backfill(force: bool = False, dry_run: bool = False, limit: int | None = Non
     docs = list(db.collection("images").stream())
     print(f"Total records in Firestore: {len(docs)}")
 
-    if not force:
-        to_process = [d for d in docs if not d.to_dict().get("location_backfilled")]
+    if force:
+        candidates = docs
     else:
-        to_process = docs
+        candidates = [d for d in docs if not d.to_dict().get("location_backfilled")]
+
+    # Only process phone photos — skip dedicated cameras, scanners, unknowns
+    to_process = [d for d in candidates if is_phone(d.to_dict())]
+    skipped_non_phone = len(candidates) - len(to_process)
 
     if limit:
         to_process = to_process[:limit]
 
-    print(f"Records to process: {len(to_process)}"
-          + (" (--force mode)" if force else "")
-          + (" (--dry-run)" if dry_run else ""))
+    suffix = " (--force)" if force else ""
+    suffix += " (--dry-run)" if dry_run else ""
+    print(f"Phone photos to process : {len(to_process)}{suffix}")
+    print(f"Non-phone skipped       : {skipped_non_phone}")
 
     if not to_process:
         print("Nothing to do.")
@@ -105,10 +145,10 @@ def backfill(force: bool = False, dry_run: bool = False, limit: int | None = Non
         filename = data.get("name", "")
 
         try:
-            # Strategy 1: use stored coords
+            # Strategy 1: use stored coords (no network call)
             location, lat, lon = geocode_from_stored_coords(data)
 
-            # Strategy 2: download from GCS and extract EXIF
+            # Strategy 2: download first 64 KB from GCS and extract EXIF
             if location is None:
                 location, lat, lon = geocode_from_gcs(bucket, filename)
 
@@ -129,8 +169,7 @@ def backfill(force: bool = False, dry_run: bool = False, limit: int | None = Non
             }
 
             if dry_run:
-                tqdm.write(f"[dry-run] {filename}: would set location='{location}', "
-                           f"tag='{location_tag}'")
+                tqdm.write(f"[dry-run] {filename}: location='{location}', tag='{location_tag}'")
             else:
                 doc.reference.update(update_payload)
 
@@ -141,16 +180,16 @@ def backfill(force: bool = False, dry_run: bool = False, limit: int | None = Non
             skipped_error += 1
 
     action = "Would update" if dry_run else "Updated"
-    print(f"\n✅ Done. {action}: {updated} | No GPS: {skipped_no_gps} | Errors: {skipped_error}")
+    print(f"\n✅ Done. {action}: {updated} | No GPS in EXIF: {skipped_no_gps} | Errors: {skipped_error}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Backfill GPS location tags for existing Firestore image records."
+        description="Backfill GPS location tags for phone photos in Firestore."
     )
     parser.add_argument(
         "--force", action="store_true",
-        help="Re-process records that already have a location tag."
+        help="Re-process records that already have location_backfilled=True."
     )
     parser.add_argument(
         "--dry-run", action="store_true",
