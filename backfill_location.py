@@ -82,6 +82,28 @@ def build_clients():
     return storage_client, db
 
 
+def fetch_all_docs(db):
+    """
+    Fetch all documents from the images collection in paginated batches.
+    Avoids long-lived gRPC streams that time out on Cloud Shell.
+    """
+    BATCH_SIZE = 500
+    docs = []
+    last_doc = None
+
+    while True:
+        query = db.collection("images").order_by("__name__").limit(BATCH_SIZE)
+        if last_doc:
+            query = query.start_after(last_doc)
+        batch = list(query.stream())
+        docs.extend(batch)
+        if len(batch) < BATCH_SIZE:
+            break
+        last_doc = batch[-1]
+
+    return docs
+
+
 def geocode_from_stored_coords(data: dict) -> tuple:
     """Return (location_str, lat, lon) using lat/lon already in the record."""
     lat = data.get("latitude")
@@ -114,7 +136,7 @@ def backfill(force: bool = False, dry_run: bool = False, limit: int | None = Non
     storage_client, db = build_clients()
     bucket = storage_client.bucket(BUCKET_NAME)
 
-    docs = list(db.collection("images").stream())
+    docs = fetch_all_docs(db)
     print(f"Total records in Firestore: {len(docs)}")
 
     if force:
