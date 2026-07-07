@@ -6,6 +6,7 @@ from google.cloud import storage, firestore
 from PIL import Image
 from PIL.ExifTags import TAGS
 from tqdm import tqdm
+from gps_location import get_location_tag
 
 # --- CONFIGURATION ---
 PROJECT_ID = "life-begins-at-40"
@@ -73,7 +74,10 @@ def upload_image(file_path, quiet=False):
     # 3. Get Metadata
     metadata = get_exif_data(file_path)
 
-    # 4. Save to Firestore with auto-tags
+    # 4. Extract GPS location
+    location_tag, lat, lon = get_location_tag(file_path)
+
+    # 5. Save to Firestore with auto-tags
     record = {
         "name": filename,
         "orig_url": orig_url,
@@ -84,8 +88,14 @@ def upload_image(file_path, quiet=False):
         "uploaded_at": firestore.SERVER_TIMESTAMP,
         "content_hash": content_hash,
         "auto_tagged": True,
+        "location": location_tag,
+        "latitude": lat,
+        "longitude": lon,
     }
-    record["tags"] = auto_tags_from_record(record)
+    auto_tags = auto_tags_from_record(record)
+    if location_tag:
+        auto_tags.append(location_tag)
+    record["tags"] = auto_tags
     db.collection("images").document(filename).set(record)
     if not quiet:
         print(f"Uploaded: {filename}")
