@@ -22,28 +22,41 @@ DATABASE    = "media-metadata"
 
 
 def test_record(bucket, data: dict):
+    from gps_location import reverse_geocode
     filename = data.get("name", "")
     print(f"\nFile    : {filename}")
     print(f"Camera  : {data.get('make', '?')} {data.get('camera', '?')}")
     print(f"Date    : {data.get('date_taken', '?')}")
-    print(f"Stored lat/lon: {data.get('latitude')}, {data.get('longitude')}")
 
+    lat = data.get("latitude")
+    lon = data.get("longitude")
+
+    # Strategy 1: use stored coords — no download needed
+    if lat is not None and lon is not None:
+        location = reverse_geocode(float(lat), float(lon))
+        print(f"✅ GPS from Firestore: {lat}, {lon}")
+        print(f"   Location          : {location}")
+        return True
+
+    # Strategy 2: download first 64 KB from GCS
+    print(f"Stored lat/lon: None — downloading first 64 KB from GCS...")
     blob = bucket.blob(f"originals/{filename}")
     if not blob.exists():
         print("❌ Blob not found in GCS")
-        return
+        return False
 
-    print("Downloading first 64 KB from GCS...")
     buf = io.BytesIO()
     blob.download_to_file(buf, start=0, end=65535, timeout=60)
     buf.seek(0)
 
     tag, lat, lon = get_location_tag(buf)
     if tag:
-        print(f"✅ GPS found  : {lat:.6f}, {lon:.6f}")
-        print(f"   Location   : {tag}")
+        print(f"✅ GPS from EXIF: {lat:.6f}, {lon:.6f}")
+        print(f"   Location     : {tag}")
+        return True
     else:
         print("❌ No GPS data in EXIF")
+        return False
 
 
 def main():
