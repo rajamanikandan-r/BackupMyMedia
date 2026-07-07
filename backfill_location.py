@@ -153,6 +153,7 @@ def backfill(force: bool = False, dry_run: bool = False, limit: int | None = Non
                 location, lat, lon = geocode_from_gcs(bucket, filename)
 
             if location is None:
+                tqdm.write(f"  ⏭  {filename}: no GPS data")
                 skipped_no_gps += 1
                 continue
 
@@ -169,14 +170,15 @@ def backfill(force: bool = False, dry_run: bool = False, limit: int | None = Non
             }
 
             if dry_run:
-                tqdm.write(f"[dry-run] {filename}: location='{location}', tag='{location_tag}'")
+                tqdm.write(f"  🔍 {filename}: would set → {location}")
             else:
                 doc.reference.update(update_payload)
+                tqdm.write(f"  ✅ {filename}: {location}")
 
             updated += 1
 
         except Exception as e:
-            tqdm.write(f"\nError processing {filename}: {e}")
+            tqdm.write(f"  ❌ {filename}: error — {e}")
             skipped_error += 1
 
     action = "Would update" if dry_run else "Updated"
