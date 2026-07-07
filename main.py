@@ -43,6 +43,47 @@ db = firestore.Client.from_service_account_json(
     KEY_PATH, project=PROJECT_ID, database="media-metadata"
 )
 
+# --- IN-MEMORY CACHE ---
+# Stores tag groups + stats so the index route doesn't scan all docs on every request.
+# Invalidated by calling _invalidate_cache() after any write operation.
+_cache: dict = {}
+
+def _invalidate_cache():
+    _cache.clear()
+
+def _get_cached_stats():
+    """
+    Return (tag_groups, total, total_size) from cache, or rebuild by scanning
+    all Firestore docs if the cache is empty.
+    Always repopulates flask.g with the exclusive category sets so that
+    tag_toggle_url works correctly on cache hits.
+    """
+    from flask import g
+
+    if not _cache:
+        all_docs = list(db.collection("images").stream())
+        total = len(all_docs)
+        total_size = 0
+        for doc in all_docs:
+            total_size += doc.to_dict().get("file_size", 0)
+
+        tag_groups = categorize_tags(all_docs)  # also sets g._tag_* for this request
+
+        _cache["tag_groups"]      = tag_groups
+        _cache["total"]           = total
+        _cache["total_size"]      = total_size
+        # Persist the raw sets so cache hits can restore them
+        _cache["_tag_locations"]  = g._tag_locations
+        _cache["_tag_years"]      = g._tag_years
+        _cache["_tag_cameras"]    = g._tag_cameras
+    else:
+        # Restore category sets onto g so tag_toggle_url works on cache hits
+        g._tag_locations = _cache["_tag_locations"]
+        g._tag_years     = _cache["_tag_years"]
+        g._tag_cameras   = _cache["_tag_cameras"]
+
+    return _cache["tag_groups"], _cache["total"], _cache["total_size"]
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -50,6 +91,92 @@ def login_required(f):
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated
+
+@app.template_global()
+def tag_toggle_url(tag):
+    """
+    Return a URL that toggles a tag in the active filter.
+    - If the tag is already active, remove it.
+    - If adding a tag from location/year/camera category, replace any existing
+      tag from the same category (only one per category makes sense).
+    - User tags stack freely.
+    """
+    active = [t.lower() for t in request.args.getlist("tags")]
+    tag = tag.lower()
+
+    if tag in active:
+        # Remove it
+        updated = [t for t in active if t != tag]
+    else:
+        # Determine which category this tag belongs to using the current tag_groups
+        # We re-derive category sets from the template context via a quick check
+        # on the tag_groups that were computed for this request — but since
+        # tag_toggle_url is called from the template, we derive it inline.
+        from flask import g
+        exclusive_groups = [
+            getattr(g, "_tag_locations", set()),
+            getattr(g, "_tag_years",     set()),
+            getattr(g, "_tag_cameras",   set()),
+        ]
+        updated = list(active)
+        for group in exclusive_groups:
+            if tag in group:
+                updated = [t for t in updated if t not in group]
+                break
+        updated.append(tag)
+
+    if not updated:
+        return "/"
+    return "/?" + "&".join(f"tags={t}" for t in updated)
+
+
+def categorize_tags(all_docs):
+    """
+    Split all tags into four groups: location, year, camera, user-created.
+    Returns a dict with keys: locations, years, cameras, user.
+    Also stores the exclusive-category sets on flask.g for tag_toggle_url.
+    """
+    import re
+    from flask import g
+    locations, years, cameras, user = set(), set(), set(), set()
+    known_locations = set()
+    known_cameras = set()
+
+    for doc in all_docs:
+        data = doc.to_dict()
+        loc = (data.get("location") or "").lower().strip()
+        cam = (data.get("camera") or "").lower().strip()
+        if loc:
+            known_locations.add(loc)
+        if cam and cam not in ("unknown", "--", ""):
+            known_cameras.add(cam)
+
+    for doc in all_docs:
+        data = doc.to_dict()
+        for tag in data.get("tags", []):
+            tag = tag.strip()
+            if not tag:
+                continue
+            if re.match(r"^\d{4}$", tag):
+                years.add(tag)
+            elif tag in known_locations:
+                locations.add(tag)
+            elif tag in known_cameras:
+                cameras.add(tag)
+            else:
+                user.add(tag)
+
+    # Store for tag_toggle_url to use during this request
+    g._tag_locations = locations
+    g._tag_years     = years
+    g._tag_cameras   = cameras
+
+    return {
+        "locations": sorted(locations),
+        "years":     sorted(years, reverse=True),
+        "cameras":   sorted(cameras),
+        "user":      sorted(user),
+    }
 
 @app.route("/login")
 def login():
@@ -115,17 +242,68 @@ def create_thumbnail(file_stream):
 @login_required
 def index():
     try:
-        docs = db.collection("images").stream()
-        all_tags = set()
-        total = 0
-        total_size = 0
-        for doc in docs:
-            data = doc.to_dict()
-            all_tags.update(data.get('tags', []))
-            total += 1
-            total_size += data.get('file_size', 0)
-        return render_template("gallery.html", all_tags=sorted(all_tags),
-                               total=total, total_size=total_size)
+        active_tags = [t.lower() for t in request.args.getlist("tags") if t.strip()]
+
+        # Single cache read instead of streaming all 13K docs
+        tag_groups, total, total_size = _get_cached_stats()
+        all_tags = (
+            tag_groups["locations"] + tag_groups["years"] +
+            tag_groups["cameras"]   + tag_groups["user"]
+        )
+
+        items = []
+        if active_tags:
+            if len(active_tags) == 1:
+                docs = db.collection("images").where(
+                    "tags", "array_contains", active_tags[0]
+                ).stream()
+                for doc in docs:
+                    data = doc.to_dict()
+                    items.append({
+                        'name': data.get('name', 'Unknown'),
+                        'camera': data.get('camera', 'Unknown'),
+                        'make': data.get('make', 'Unknown'),
+                        'date_taken': data.get('date_taken', 'Unknown'),
+                        'thumb_url': data.get('thumb_url'),
+                        'orig_url': data.get('orig_url'),
+                        'tags': data.get('tags', [])
+                    })
+            else:
+                # AND: fetch by first tag, filter rest client-side
+                docs = db.collection("images").where(
+                    "tags", "array_contains", active_tags[0]
+                ).stream()
+                rest = set(active_tags[1:])
+                for doc in docs:
+                    data = doc.to_dict()
+                    if rest.issubset(set(data.get('tags', []))):
+                        items.append({
+                            'name': data.get('name', 'Unknown'),
+                            'camera': data.get('camera', 'Unknown'),
+                            'make': data.get('make', 'Unknown'),
+                            'date_taken': data.get('date_taken', 'Unknown'),
+                            'thumb_url': data.get('thumb_url'),
+                            'orig_url': data.get('orig_url'),
+                            'tags': data.get('tags', [])
+                        })
+
+        # Pagination
+        page = max(1, request.args.get('page', 1, type=int))
+        per_page = 50
+        filtered_total = len(items)
+        total_pages = max(1, (filtered_total + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        paged_items = items[(page - 1) * per_page : page * per_page]
+
+        return render_template("gallery.html",
+                               all_tags=sorted(all_tags),
+                               tag_groups=tag_groups,
+                               active_tags=active_tags,
+                               items=paged_items if active_tags else [],
+                               total=total,
+                               total_size=total_size,
+                               page=page,
+                               total_pages=total_pages if active_tags else 1)
     except Exception as e:
         return f"Error: {e}", 500
 
@@ -134,6 +312,7 @@ def index():
 def update_tags(filename):
     tags = [t.strip().lower() for t in request.form.get("tags", "").split(",") if t.strip()]
     db.collection("images").document(filename).update({"tags": tags})
+    _invalidate_cache()
     return redirect(url_for("index"))
 
 @app.route("/upload", methods=["POST"])
@@ -198,6 +377,8 @@ def upload():
     msg = f"{uploaded} photo(s) uploaded."
     if skipped:
         msg += f" {skipped} skipped (duplicate)."
+    if uploaded:
+        _invalidate_cache()
     flash(msg)
     return redirect(url_for("index"))
 
@@ -223,6 +404,7 @@ def autotag():
             batch = db.batch()
     if count % 500 != 0:
         batch.commit()
+    _invalidate_cache()
     return redirect(url_for("index"))
 
 @app.route("/photos/tags/bulk", methods=["POST"])
@@ -236,6 +418,7 @@ def bulk_tag():
             ref = db.collection("images").document(filename)
             batch.update(ref, {"tags": firestore.ArrayUnion([tag])})
         batch.commit()
+        _invalidate_cache()
     return redirect(url_for("index"))
 
 
@@ -247,7 +430,8 @@ def bulk_location():
         flash("No photos selected.")
         return redirect(url_for("index"))
 
-    updated, skipped, errors = 0, 0, 0
+    updated, skipped_no_gps, skipped_already, errors = 0, 0, 0, 0
+    error_details = []
     bucket = storage_client.bucket(BUCKET_NAME)
 
     for filename in filenames:
@@ -256,30 +440,31 @@ def bulk_location():
             doc = doc_ref.get()
             if not doc.exists:
                 errors += 1
+                error_details.append(f"{filename}: not found")
                 continue
             data = doc.to_dict()
 
-            # Skip if location already set
+            # Skip if location already tagged
             if data.get("location"):
-                skipped += 1
+                skipped_already += 1
                 continue
 
             location, lat, lon = None, None, None
 
-            # Strategy 1: use stored coords — no download
+            # Strategy 1: use stored coords — no GCS download needed
             stored_lat = data.get("latitude")
             stored_lon = data.get("longitude")
             if stored_lat is not None and stored_lon is not None:
                 from gps_location import reverse_geocode
-                location = reverse_geocode(float(stored_lat), float(stored_lon))
                 lat, lon = float(stored_lat), float(stored_lon)
+                location = reverse_geocode(lat, lon)
 
-            # Strategy 2: download first 64 KB from GCS
+            # Strategy 2: download first 64 KB from GCS and extract EXIF
             if location is None:
                 blob = bucket.blob(f"originals/{filename}")
                 if blob.exists():
                     buf = io.BytesIO()
-                    blob.download_to_file(buf, start=0, end=65535, timeout=30)
+                    blob.download_to_file(buf, start=0, end=524287, timeout=120)
                     buf.seek(0)
                     location_tag, lat, lon = get_location_tag(buf)
                     if location_tag:
@@ -287,7 +472,7 @@ def bulk_location():
                         location = reverse_geocode(lat, lon)
 
             if not location:
-                skipped += 1
+                skipped_no_gps += 1
                 continue
 
             location_tag = location.lower()
@@ -302,48 +487,145 @@ def bulk_location():
             })
             updated += 1
 
-        except Exception:
+        except Exception as e:
             errors += 1
+            error_details.append(f"{filename}: {e}")
 
-    msg = f"Location tagged: {updated} photo(s)."
-    if skipped:
-        msg += f" {skipped} had no GPS data or already tagged."
+    parts = []
+    if updated:
+        parts.append(f"{updated} photo(s) location tagged")
+    if skipped_already:
+        parts.append(f"{skipped_already} already had a location")
+    if skipped_no_gps:
+        parts.append(f"{skipped_no_gps} had no GPS data")
     if errors:
-        msg += f" {errors} error(s)."
-    flash(msg)
+        parts.append(f"{errors} error(s): {'; '.join(error_details[:3])}")
+    flash(". ".join(parts) + "." if parts else "Nothing to update.")
+    _invalidate_cache()
     return redirect(url_for("index"))
+
+def _docs_matching_tags(filter_tags):
+    """Return all Firestore docs whose tags contain ALL of filter_tags."""
+    if not filter_tags:
+        return []
+    if len(filter_tags) == 1:
+        return list(db.collection("images").where(
+            "tags", "array_contains", filter_tags[0]
+        ).stream())
+    # AND: fetch by first tag then filter client-side
+    docs = db.collection("images").where(
+        "tags", "array_contains", filter_tags[0]
+    ).stream()
+    rest = set(filter_tags[1:])
+    return [d for d in docs if rest.issubset(set(d.to_dict().get("tags", [])))]
+
+
+@app.route("/photos/tags/bulk-all", methods=["POST"])
+@login_required
+def bulk_tag_all():
+    filter_tags = [t.lower() for t in request.form.getlist("filter_tags") if t.strip()]
+    tag = request.form.get("tag", "").strip().lower()
+    if not tag or not filter_tags:
+        flash("Missing tag or filter.")
+        return redirect(url_for("index"))
+
+    docs = _docs_matching_tags(filter_tags)
+    batch = db.batch()
+    count = 0
+    for doc in docs:
+        batch.update(doc.reference, {"tags": firestore.ArrayUnion([tag])})
+        count += 1
+        if count % 500 == 0:
+            batch.commit()
+            batch = db.batch()
+    if count % 500 != 0:
+        batch.commit()
+
+    flash(f"Tag '{tag}' applied to {count} photo(s).")
+    _invalidate_cache()
+    return redirect("/?" + "&".join(f"tags={t}" for t in filter_tags))
+
+
+@app.route("/photos/location/bulk-all", methods=["POST"])
+@login_required
+def bulk_location_all():
+    filter_tags = [t.lower() for t in request.form.getlist("filter_tags") if t.strip()]
+    if not filter_tags:
+        flash("No filter tags provided.")
+        return redirect(url_for("index"))
+
+    docs = _docs_matching_tags(filter_tags)
+    bucket = storage_client.bucket(BUCKET_NAME)
+    updated, skipped_no_gps, skipped_already, errors = 0, 0, 0, 0
+    error_details = []
+
+    for doc in docs:
+        data = doc.to_dict()
+        filename = data.get("name", "")
+        try:
+            if data.get("location"):
+                skipped_already += 1
+                continue
+
+            location, lat, lon = None, None, None
+            stored_lat = data.get("latitude")
+            stored_lon = data.get("longitude")
+            if stored_lat is not None and stored_lon is not None:
+                from gps_location import reverse_geocode
+                lat, lon = float(stored_lat), float(stored_lon)
+                location = reverse_geocode(lat, lon)
+
+            if location is None:
+                blob = bucket.blob(f"originals/{filename}")
+                if blob.exists():
+                    buf = io.BytesIO()
+                    blob.download_to_file(buf, start=0, end=524287, timeout=120)
+                    buf.seek(0)
+                    location_tag, lat, lon = get_location_tag(buf)
+                    if location_tag:
+                        from gps_location import reverse_geocode
+                        location = reverse_geocode(lat, lon)
+
+            if not location:
+                skipped_no_gps += 1
+                continue
+
+            location_tag = location.lower()
+            existing_tags = data.get("tags") or []
+            new_tags = list(set(existing_tags + [location_tag]))
+            doc.reference.update({
+                "location": location,
+                "latitude": lat,
+                "longitude": lon,
+                "tags": new_tags,
+                "location_backfilled": True,
+            })
+            updated += 1
+        except Exception as e:
+            errors += 1
+            error_details.append(f"{filename}: {e}")
+
+    parts = []
+    if updated:
+        parts.append(f"{updated} photo(s) location tagged")
+    if skipped_already:
+        parts.append(f"{skipped_already} already had a location")
+    if skipped_no_gps:
+        parts.append(f"{skipped_no_gps} had no GPS data")
+    if errors:
+        parts.append(f"{errors} error(s): {'; '.join(error_details[:3])}")
+    flash(". ".join(parts) + "." if parts else "Nothing to update.")
+    _invalidate_cache()
+    return redirect("/?" + "&".join(f"tags={t}" for t in filter_tags))
+
 
 @app.route("/tag/<tag_name>")
 def tag(tag_name):
-    try:
-        all_docs = db.collection("images").stream()
-        all_tags = set()
-        for doc in all_docs:
-            all_tags.update(doc.to_dict().get('tags', []))
-
-        docs = db.collection("images").where("tags", "array_contains", tag_name.lower()).stream()
-        items = []
-        for doc in docs:
-            data = doc.to_dict()
-            items.append({
-                'name': data.get('name', 'Unknown'),
-                'camera': data.get('camera', 'Unknown'),
-                'make': data.get('make', 'Unknown'),
-                'date_taken': data.get('date_taken', 'Unknown'),
-                'thumb_url': data.get('thumb_url'),
-                'orig_url': data.get('orig_url'),
-                'tags': data.get('tags', [])
-            })
-        page = max(1, request.args.get('page', 1, type=int))
-        per_page = 50
-        total = len(items)
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        page = min(page, total_pages)
-        items = items[(page - 1) * per_page : page * per_page]
-        return render_template("gallery.html", items=items, active_tag=tag_name.lower(),
-                               all_tags=sorted(all_tags), page=page, total_pages=total_pages)
-    except Exception as e:
-        return f"Error: {e}", 500
+    # Redirect old single-tag URLs into the new multi-tag filter
+    active = request.args.getlist("tags") or []
+    if tag_name.lower() not in active:
+        active = active + [tag_name.lower()]
+    return redirect(url_for("index") + "?" + "&".join(f"tags={t}" for t in active))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)

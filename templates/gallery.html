@@ -15,8 +15,18 @@
             height: 100vh;
             overflow-y: auto;
         }
-        .tag-link { display: block; padding: 4px 8px; border-radius: 4px; text-decoration: none; color: #333; font-size: .9rem; }
-        .tag-link:hover, .tag-link.active { background: #0d6efd; color: #fff; }
+        .tag-link {
+            display: block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #333;
+            font-size: .9rem;
+            cursor: pointer;
+        }
+        .tag-link:hover { background: #e8f0fe; color: #0d6efd; }
+        .tag-link.active { background: #0d6efd; color: #fff; }
+        .tag-link.active:hover { background: #0b5ed7; color: #fff; }
     </style>
 </head>
 <body class="bg-light">
@@ -36,18 +46,42 @@
     <div class="d-flex" style="min-height:calc(100vh - 56px);">
 
         <!-- LEFT SIDEBAR: Tags -->
-        <div id="sidebar" class="bg-white border-end p-3" style="width:200px;min-width:200px;">
-            <div class="fw-semibold mb-2 text-muted small text-uppercase">Tags</div>
-            {% for t in all_tags %}
-            <a href="/tag/{{ t }}" class="tag-link {% if t == active_tag %}active{% endif %}">{{ t }}</a>
+        <div id="sidebar" class="bg-white border-end p-3" style="width:210px;min-width:210px;">
+            {% if active_tags %}
+            <a href="/" class="tag-link text-danger mb-2 d-block" style="font-size:.8rem;">✕ Clear all filters</a>
+            {% endif %}
+
+            {% set groups = [
+                ('📍 Location', tag_groups.locations),
+                ('📅 Year',     tag_groups.years),
+                ('📷 Camera',   tag_groups.cameras),
+                ('🏷️ Tags',     tag_groups.user),
+            ] %}
+            {% for group_name, group_tags in groups %}
+            {% if group_tags %}
+            <div class="mb-2">
+                <div class="fw-semibold text-muted small text-uppercase mb-1"
+                     style="cursor:pointer;" onclick="toggleGroup(this)">
+                    {{ group_name }}
+                    <span class="float-end">▾</span>
+                </div>
+                <div class="group-tags">
+                    {% for t in group_tags %}
+                    <a href="{{ tag_toggle_url(t) }}" class="tag-link {% if t in active_tags %}active{% endif %}">
+                        {% if t in active_tags %}<span style="font-size:.7rem;margin-right:3px;">✕</span>{% endif %}{{ t }}
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
             {% endfor %}
         </div>
 
         <!-- MAIN CONTENT -->
         <div class="flex-grow-1 p-4">
 
-            <!-- Upload form (home only) -->
-            {% if not active_tag %}
+            <!-- Stats + upload form (home / no filter) -->
+            {% if not active_tags %}
             <div class="row g-3 mb-4">
                 <div class="col-auto">
                     <div class="card shadow-sm p-4 text-center" style="min-width:160px;">
@@ -88,18 +122,40 @@
             {% endwith %}
             {% endif %}
 
-            {% if active_tag %}
-            <h5 class="mb-3">
-                Photos tagged: <span class="badge bg-secondary">{{ active_tag }}</span>
-                <a href="/" class="btn btn-sm btn-outline-secondary ms-2">← Back</a>
-            </h5>
+            <!-- Active tag filter chips -->
+            {% if active_tags %}
+            {% with messages = get_flashed_messages() %}
+            {% if messages %}
+            <div class="alert alert-info alert-dismissible fade show" role="alert">
+                {{ messages[0] }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endif %}
+            {% endwith %}
+            <div class="mb-3 d-flex flex-wrap align-items-center gap-2">
+                <span class="text-muted small">Filtering by:</span>
+                {% for t in active_tags %}
+                <a href="{{ tag_toggle_url(t) }}" class="badge bg-primary text-decoration-none" style="font-size:.85rem;">
+                    {{ t }} ✕
+                </a>
+                {% endfor %}
+                <a href="/" class="btn btn-sm btn-outline-secondary">Clear all</a>
+                <span class="text-muted small ms-2">{{ items|length }} photo(s) shown</span>
+            </div>
             {% endif %}
 
             <!-- Bulk action bar -->
             <form id="bulkForm" action="/photos/tags/bulk" method="post">
-                <div id="bulkBar" class="card shadow-sm p-3 mb-4 d-none">
+                <div id="bulkBar" class="card shadow-sm p-3 mb-4 {% if not active_tags %}d-none{% endif %}">
                     <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <!-- Page selection -->
+                        <div class="form-check me-1">
+                            <input type="checkbox" class="form-check-input" id="selectAll"
+                                   style="width:1.3em;height:1.3em;" onchange="toggleSelectAll(this)">
+                            <label class="form-check-label small text-muted" for="selectAll">Select page</label>
+                        </div>
                         <span id="selectedCount" class="text-muted small"></span>
+                        <div class="vr mx-1"></div>
                         <select name="tag" id="bulkTagSelect" class="form-select form-select-sm" style="max-width:180px;">
                             <option value="">— existing tag —</option>
                             {% for t in all_tags %}
@@ -113,6 +169,34 @@
                                 onclick="submitBulkLocation()">📍 Tag Location</button>
                         <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearSelection()">Clear</button>
                     </div>
+
+                    {% if active_tags %}
+                    <!-- All-matching actions (server-side, no checkboxes needed) -->
+                    <div class="border-top mt-3 pt-3 d-flex align-items-center gap-2 flex-wrap">
+                        <span class="text-muted small fw-semibold">All matching photos:</span>
+                        <form action="/photos/tags/bulk-all" method="post" class="d-inline-flex gap-2 align-items-center" id="bulkAllTagForm">
+                            {% for t in active_tags %}
+                            <input type="hidden" name="filter_tags" value="{{ t }}">
+                            {% endfor %}
+                            <select name="tag" id="bulkAllTagSelect" class="form-select form-select-sm" style="max-width:180px;">
+                                <option value="">— existing tag —</option>
+                                {% for t in all_tags %}
+                                <option value="{{ t }}">{{ t }}</option>
+                                {% endfor %}
+                            </select>
+                            <span class="text-muted small">or</span>
+                            <input type="text" id="bulkAllTagNew" class="form-control form-control-sm" style="max-width:180px;" placeholder="New tag">
+                            <button type="submit" class="btn btn-sm btn-success"
+                                    onclick="return resolveAllTag(event)">Apply to All</button>
+                        </form>
+                        <form action="/photos/location/bulk-all" method="post" class="d-inline">
+                            {% for t in active_tags %}
+                            <input type="hidden" name="filter_tags" value="{{ t }}">
+                            {% endfor %}
+                            <button type="submit" class="btn btn-sm btn-outline-info">📍 Tag Location for All</button>
+                        </form>
+                    </div>
+                    {% endif %}
                 </div>
 
                 <div class="row row-cols-1 row-cols-md-4 g-4">
@@ -129,8 +213,9 @@
                                 <h6 class="card-title text-truncate">{{ item.name }}</h6>
                                 {% if item.tags %}
                                 <div class="mb-2">
-                                    {% for tag in item.tags %}
-                                    <a href="/tag/{{ tag }}" class="badge bg-secondary text-decoration-none me-1">{{ tag }}</a>
+                                    {% for t in item.tags %}
+                                    <a href="{{ tag_toggle_url(t) }}" class="badge text-decoration-none me-1
+                                        {% if t in active_tags %}bg-primary{% else %}bg-secondary{% endif %}">{{ t }}</a>
                                     {% endfor %}
                                 </div>
                                 {% endif %}
@@ -151,15 +236,15 @@
             <nav class="mt-4 d-flex justify-content-center">
                 <ul class="pagination">
                     <li class="page-item {% if page == 1 %}disabled{% endif %}">
-                        <a class="page-link" href="?page={{ page - 1 }}">Previous</a>
+                        <a class="page-link" href="?{% for t in active_tags %}tags={{ t }}&{% endfor %}page={{ page - 1 }}">Previous</a>
                     </li>
                     {% for p in range(1, total_pages + 1) %}
                     <li class="page-item {% if p == page %}active{% endif %}">
-                        <a class="page-link" href="?page={{ p }}">{{ p }}</a>
+                        <a class="page-link" href="?{% for t in active_tags %}tags={{ t }}&{% endfor %}page={{ p }}">{{ p }}</a>
                     </li>
                     {% endfor %}
                     <li class="page-item {% if page == total_pages %}disabled{% endif %}">
-                        <a class="page-link" href="?page={{ page + 1 }}">Next</a>
+                        <a class="page-link" href="?{% for t in active_tags %}tags={{ t }}&{% endfor %}page={{ page + 1 }}">Next</a>
                     </li>
                 </ul>
             </nav>
@@ -169,19 +254,55 @@
     </div><!-- /d-flex -->
 
     <script>
+        function toggleGroup(header) {
+            const tags = header.nextElementSibling;
+            const arrow = header.querySelector('.float-end');
+            const collapsed = tags.style.display === 'none';
+            tags.style.display = collapsed ? '' : 'none';
+            arrow.textContent = collapsed ? '▾' : '▸';
+        }
         function updateBulkBar() {
             const checked = document.querySelectorAll('.photo-check:checked');
             const bar = document.getElementById('bulkBar');
-            bar.classList.toggle('d-none', checked.length === 0);
-            document.getElementById('selectedCount').textContent = checked.length + ' selected';
+            bar.classList.remove('d-none');
+            const countEl = document.getElementById('selectedCount');
+            countEl.textContent = checked.length > 0 ? checked.length + ' selected' : '';
+            // Sync select-all checkbox state
+            const all = document.querySelectorAll('.photo-check');
+            const selectAll = document.getElementById('selectAll');
+            if (selectAll) {
+                selectAll.checked = all.length > 0 && checked.length === all.length;
+                selectAll.indeterminate = checked.length > 0 && checked.length < all.length;
+            }
+        }
+        function toggleSelectAll(cb) {
+            document.querySelectorAll('.photo-check').forEach(c => c.checked = cb.checked);
+            updateBulkBar();
         }
         function clearSelection() {
             document.querySelectorAll('.photo-check').forEach(c => c.checked = false);
+            const selectAll = document.getElementById('selectAll');
+            if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
             updateBulkBar();
         }
         function submitBulkLocation() {
             document.getElementById('bulkForm').action = '/photos/location/bulk';
             document.getElementById('bulkForm').submit();
+        }
+        function resolveAllTag(e) {
+            const select = document.getElementById('bulkAllTagSelect').value;
+            const newTag = document.getElementById('bulkAllTagNew').value.trim();
+            const tag = newTag || select;
+            if (!tag) { e.preventDefault(); alert('Please enter or select a tag.'); return false; }
+            let hidden = document.getElementById('bulkAllTagResolved');
+            if (!hidden) {
+                hidden = document.createElement('input');
+                hidden.type = 'hidden'; hidden.name = 'tag'; hidden.id = 'bulkAllTagResolved';
+                document.getElementById('bulkAllTagForm').appendChild(hidden);
+            }
+            hidden.value = tag;
+            document.getElementById('bulkAllTagSelect').disabled = true;
+            return true;
         }
         document.getElementById('bulkTagNew').addEventListener('input', function() {
             if (this.value) document.getElementById('bulkTagSelect').value = '';
@@ -190,6 +311,7 @@
             if (this.value) document.getElementById('bulkTagNew').value = '';
         });
         document.getElementById('bulkForm').addEventListener('submit', function(e) {
+            if (this.action.includes('/photos/location/bulk')) return;
             const select = document.getElementById('bulkTagSelect').value;
             const newTag = document.getElementById('bulkTagNew').value.trim();
             const tag = newTag || select;
